@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# bat_no_bat_pyqt.py — A modern PyQt6 GUI for the Bat/No-Bat classifier.
-# Ported from the original Tkinter version with an improved, non-freezing UI.
+# bat_no_bat_pyside.py — A modern PySide6 GUI for the Bat/No-Bat classifier.
+# Ported from the original PyQt6 version.
 
 import multiprocessing
 import os
@@ -27,12 +27,12 @@ from multiprocessing import get_context
 import psutil
 from PIL import Image
 
-# --- PyQt6 Libraries (Frontend) ---
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QGridLayout, QPushButton, QLineEdit, QLabel, QFileDialog,
-                             QMessageBox, QProgressBar, QGroupBox, QCheckBox, QFrame)
-from PyQt6.QtGui import QPixmap, QIcon, QFont
-from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal
+# --- PySide6 Libraries (Frontend) ---
+from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                               QGridLayout, QPushButton, QLineEdit, QLabel, QFileDialog,
+                               QMessageBox, QProgressBar, QGroupBox, QCheckBox, QFrame)
+from PySide6.QtGui import QPixmap, QIcon, QFont
+from PySide6.QtCore import Qt, QThread, QObject, Signal
 
 # --- Headless plotting for PNG generation ---
 import matplotlib
@@ -43,7 +43,7 @@ import matplotlib.pyplot as plt
 
 # =============================================================================
 #
-# 1. BACKEND ANALYSIS LOGIC (UNCHANGED FROM ORIGINAL)
+# 1. BACKEND ANALYSIS LOGIC (UNCHANGED)
 #    This entire section contains the core scientific code. It is kept
 #    identical to the original script to preserve the analysis logic.
 #
@@ -121,7 +121,8 @@ def stft_mag_db_chunked(path: Path, cfg: SpectroCfg):
             if pool_vec is None:
                 pool_vec, pool_count = S_db[i].copy(), 1
             else:
-                np.maximum(pool_vec, S_db[i], out=pool_vec); pool_count += 1
+                np.maximum(pool_vec, S_db[i], out=pool_vec);
+                pool_count += 1
             if pool_count >= decim: pooled_cols.append(pool_vec.copy()); pool_vec = None
     if pool_vec is not None: pooled_cols.append(pool_vec)
     S = np.stack(pooled_cols, axis=1) if pooled_cols else np.zeros((np.count_nonzero(fmask), 1), dtype=np.float32)
@@ -141,10 +142,7 @@ def save_png_fast(S01, freqs, out_png: Path, cfg: SpectroCfg, title: str | None 
     f_span_khz = max(1.0, (float(freqs.max()) - float(freqs.min())) / 1000.0) if freqs.size >= 2 else 1.0
     tgt_h = max(32, int(round(f_span_khz * cfg.px_per_khz)));
     tgt_w = rgba.shape[1]
-
-    # FIX: Removed deprecated 'mode' parameter. Pillow infers it correctly.
     img = Image.fromarray(rgba).resize((tgt_w, tgt_h), Image.Resampling.BICUBIC)
-
     out_png.parent.mkdir(parents=True, exist_ok=True);
     img.save(out_png)
 
@@ -225,6 +223,7 @@ def _ridge_from_patch(patch_db, patch_binary, freq_axis, time_axis):
     dt = ridge_t[-1] - ridge_t[0]
     return (ridge_f[-1] - ridge_f[0]) / dt if dt >= MIN_RIDGE_DT_S else None
 
+
 def calculate_coherence(patch):
     total_pixels = int(np.sum(patch))
     if total_pixels == 0: return 0.0
@@ -232,6 +231,7 @@ def calculate_coherence(patch):
     if num_labels <= 1: return 1.0
     largest = int(np.max(stats[1:, cv2.CC_STAT_AREA]))
     return largest / total_pixels
+
 
 def calculate_tonal_purity(patch_db, patch_binary):
     active_pixels = patch_db[patch_binary.astype(bool)]
@@ -242,18 +242,25 @@ def calculate_tonal_purity(patch_db, patch_binary):
     top_avg = float(np.mean(top_pixels)) if len(top_pixels) > 0 else overall_avg
     return top_avg - overall_avg
 
+
 def classify_cluster(duration, bandwidth, min_freq, coeffs,
                      coherence, purity, purity_threshold, *,
                      simple_slope=None):
-    if duration < 0.05: coh_thresh = 0.75
-    elif duration < 0.15: coh_thresh = 0.70
-    else: coh_thresh = 0.60
+    if duration < 0.05:
+        coh_thresh = 0.75
+    elif duration < 0.15:
+        coh_thresh = 0.70
+    else:
+        coh_thresh = 0.60
     if coherence < coh_thresh or duration < 0.01: return "Noise"
     purity_gate = purity_threshold + (1.0 if duration < 0.04 else 0.0)
     if purity < purity_gate: return "Noise"
-    has_downward_sweep = (simple_slope <= ECHO_MIN_NEG_SLOPE_HZ_PER_S) if simple_slope is not None else (coeffs[1] < 0.0)
-    if (min_freq > 17_000.0) and (bandwidth < 40_000.0) and (duration < 0.10) and has_downward_sweep: return "Echolocation"
-    if (min_freq > 18_000.0) and (duration < 0.40) and ((duration > 0.04) or (bandwidth > 70_000.0 and duration > 0.015)): return "Social"
+    has_downward_sweep = (simple_slope <= ECHO_MIN_NEG_SLOPE_HZ_PER_S) if simple_slope is not None else (
+                coeffs[1] < 0.0)
+    if (min_freq > 17_000.0) and (bandwidth < 40_000.0) and (
+            duration < 0.10) and has_downward_sweep: return "Echolocation"
+    if (min_freq > 18_000.0) and (duration < 0.40) and (
+            (duration > 0.04) or (bandwidth > 70_000.0 and duration > 0.015)): return "Social"
     if simple_slope is not None and (simple_slope >= -80_000.0) and (min_freq >= 16_000.0) and duration <= 0.040:
         if (bandwidth >= 6_000.0) or (purity >= purity_threshold + 2.0) or (coherence >= 0.85): return "ShortSocial"
     return "Noise"
@@ -270,7 +277,7 @@ def process_chunk(args):
     points = np.argwhere(binary_image);
     npts = points.shape[0]
     if (float(npts) / binary_image.size) > params['max_occ'] and npts > params['max_npts']: return []
-    if npts < 10: return []  # Changed from DBSCAN_MIN_SAMPLES_DEFAULT to match Tkinter version's logic path
+    if npts < 10: return []
     from sklearn.cluster import DBSCAN
     db = DBSCAN(eps=3, min_samples=params['dbscan_min_samples']).fit(points)
     results = []
@@ -283,7 +290,6 @@ def process_chunk(args):
         patch_db = db_Sxx[min_r:max_r + 1, min_c:max_c + 1]
         patch_freqs, patch_times = frequencies[min_r:max_r + 1], times[min_c:max_c + 1]
 
-        # This is the logic that was missing:
         coherence = calculate_coherence(patch_binary)
         tonal_purity = calculate_tonal_purity(patch_db, patch_binary)
 
@@ -300,7 +306,6 @@ def process_chunk(args):
             coeffs = (0.0, 0.0, 0.0)
         simple_slope = _ridge_from_patch(patch_db, patch_binary, patch_freqs, patch_times)
 
-        # This now calls the correct, more complex classifier:
         label = classify_cluster(duration, bandwidth, min_freq, coeffs, coherence, tonal_purity,
                                  params['purity_threshold'], simple_slope=simple_slope)
 
@@ -343,28 +348,46 @@ def analyze_single_file(filepath, params):
     with sf.SoundFile(filepath, 'r') as f:
         sr, total_frames = f.samplerate, len(f)
     duration_s = total_frames / sr if sr > 0 else 0.0
-
-    # Pre-analysis for the file (verdict, SNR, etc.)
-    verdict_info = {"filepath": filepath, "duration_s": duration_s, "counts": {}, "verdict": "No Bat",
-                    "snr_ratio": None, "noise_ref_db": None}
-    if duration_s < 0.75:
-        return [], verdict_info  # Return no tasks if file is too short
-
-    thr, noise_ref_db = noise_scan_global_threshold_and_noise_ref(filepath, sr, **params['noise_scan_params'])
+    if duration_s < 0.75: return {"filepath": filepath, "duration_s": duration_s, "counts": {}, "verdict": "No Bat",
+                                  "snr_ratio": None, "noise_ref_db": None}
+    thr, noise_ref_db = noise_scan_global_threshold_and_noise_ref(filepath, sr, **params['noise_scan_params']);
     thr += params['noise_offset_db']
-    verdict_info["noise_ref_db"] = noise_ref_db
-
     task_params = params.copy()
     task_params['mask_params'] = {'mask_on': params['mask_on'], 'mask_mid': params['mask_mid'],
                                   'mask_width': params['mask_width'], 'mask_strength_db': params['mask_strength']}
-
-    # Just create the list of tasks to be processed
     tasks = []
     with sf.SoundFile(filepath, 'r') as f:
         for i in range(0, total_frames, int((CHUNK_DURATION_S - OVERLAP_S) * sr)):
             tasks.append((f.read(int(CHUNK_DURATION_S * sr)), sr, thr, i / sr, task_params))
+    calls = []
+    if tasks:
+        cores = max(1, min(params.get('cores', 1), os.cpu_count() or 1, len(tasks)))
+        if cores == 1:
+            for res in map(process_chunk, tasks): calls.extend(res)
+        else:
+            ctx = get_context("spawn")
+            with ctx.Pool(processes=cores, maxtasksperchild=50) as pool:
+                for res in pool.imap_unordered(process_chunk, tasks): calls.extend(res)
+    counts = {"Echolocation": 0, "Social": 0, "ShortSocial": 0, "Noise": 0}
+    for c in calls: counts[c.get('label', 'Noise')] += 1
+    verdict = "No Bat"
+    echo_times = sorted([c['start_time'] for c in calls if c.get('label') == "Echolocation"])
+    if len(echo_times) >= params['echo_burst_n']:
+        for i in range(len(echo_times) - params['echo_burst_n'] + 1):
+            if echo_times[i + params['echo_burst_n'] - 1] - echo_times[i] < params['echo_window_s']:
+                verdict = "Bat";
+                break
+    if verdict == "No Bat" and counts["Social"] >= params['min_social_calls']: verdict = "Bat"
 
-    return tasks, verdict_info
+    snr_ratio = None
+
+    if verdict == "Bat":
+        call_dbs = [c['mean_db_active'] for c in calls if c['label'] != 'Noise' and 'mean_db_active' in c]
+        mean_db = np.mean(call_dbs) if call_dbs else -100.0
+        snr_ratio = 10 ** ((mean_db - noise_ref_db) / 10.0) if noise_ref_db > -100 else 0
+        verdict = "Clean Bat" if snr_ratio > params['snr_clean_threshold'] else "Noisy Bat"
+    return {"filepath": filepath, "duration_s": duration_s, "counts": counts, "verdict": verdict,
+            "snr_ratio": snr_ratio, "noise_ref_db": noise_ref_db}
 
 
 # --- Reporting ---
@@ -420,66 +443,51 @@ def write_report_txt(all_results, out_dir: Path, total_wall_s, total_bytes):
         for k in ["Clean Bat", "Noisy Bat", "No Bat"]:
             f.write(f"  {k}: {final_bins.get(k, 0)}\n")
 
+    return report_path  # Return path for confirmation message
+
 
 # =============================================================================
 #
-# 2. PYQT6 GUI APPLICATION
-#    This section contains the new PyQt6 frontend, which replaces the
-#    original Tkinter GUI. It uses a worker thread for non-blocking analysis.
+# 2. PYSIDE6 GUI APPLICATION
+#    This section contains the new PySide6 frontend, which replaces the
+#    original Tkinter/PyQt6 GUI. It uses a worker thread for non-blocking analysis.
 #
 # =============================================================================
 
-# REPLACE your current AnalysisWorker.run method with this one
+class AnalysisWorker(QObject):
+    """
+    A QObject worker that runs the analysis in a separate thread to prevent
+    the GUI from freezing. Communicates with the main window via signals.
+    """
+    progress = Signal(int, int, str)  # current, total, filename
+    finished = Signal(list, float)  # results, duration
+    request_confirmation = Signal(str, list)  # message, files_to_delete
 
-def run(self):
-    start_time = time.time()
-    results, to_delete = [], []
-    cfg = SpectroCfg(style="fast")
+    def __init__(self, wav_files, params, out_root):
+        super().__init__()
+        self.wav_files = wav_files
+        self.params = params
+        self.out_root = Path(out_root)
+        self.is_running = True
 
-    cores = max(1, min(self.params.get('cores', 1), os.cpu_count() or 1))
+    def run(self):
+        start_time = time.time()
+        results, to_delete = [], []
+        cfg = SpectroCfg(style="fast")
 
-    # --- Special handling for single-core case to avoid pool overhead ---
-    if cores == 1:
-        # Run everything in a simple loop on the current thread (slower, but low memory)
         for i, filepath in enumerate(self.wav_files):
             if not self.is_running: break
             self.progress.emit(i, len(self.wav_files), Path(filepath).name)
+            res = analyze_single_file(filepath, self.params)
+            results.append(res)
+            verdict = res.get("verdict", "No Bat")
 
-            tasks, verdict_info = analyze_single_file(filepath, self.params)
-
-            # Use a simple list comprehension, equivalent to map()
-            calls = [res for task in tasks for res in process_chunk(task)]
-
-            # (The rest of the verdict and file saving logic is the same for both paths)
-            counts = {"Echolocation": 0, "Social": 0, "ShortSocial": 0, "Noise": 0}
-            for c in calls: counts[c.get('label', 'Noise')] += 1
-            verdict = "No Bat"
-            echo_times = sorted([c['start_time'] for c in calls if c.get('label') == "Echolocation"])
-            if len(echo_times) >= self.params['echo_burst_n']:
-                for j in range(len(echo_times) - self.params['echo_burst_n'] + 1):
-                    if echo_times[j + self.params['echo_burst_n'] - 1] - echo_times[j] < self.params['echo_window_s']:
-                        verdict = "Bat";
-                        break
-            if verdict == "No Bat" and counts["Social"] >= self.params['min_social_calls']: verdict = "Bat"
-
-            snr_ratio = None
-            if verdict == "Bat":
-                call_dbs = [c['mean_db_active'] for c in calls if c['label'] != 'Noise' and 'mean_db_active' in c]
-                mean_db = np.mean(call_dbs) if call_dbs else -100.0
-                noise_ref_db = verdict_info.get("noise_ref_db")
-                if noise_ref_db is not None:
-                    snr_ratio = 10 ** ((mean_db - noise_ref_db) / 10.0) if noise_ref_db > -100 else 0
-                    verdict = "Clean Bat" if snr_ratio > self.params['snr_clean_threshold'] else "Noisy Bat"
-
-            verdict_info.update({"verdict": verdict, "counts": counts, "snr_ratio": snr_ratio})
-            results.append(verdict_info)
-
-            # File saving logic
             if self.params['save_pngs']:
                 try:
                     save_file_png_wrapper(filepath, verdict, self.out_root, cfg)
                 except Exception as e:
                     print(f"[ERROR] PNG generation failed for {filepath}: {e}")
+
             copied_ok = False
             if self.params['save_wavs'] and verdict in ("Clean Bat", "Noisy Bat"):
                 try:
@@ -492,84 +500,20 @@ def run(self):
                     copied_ok = True
                 except Exception as e:
                     print(f"[ERROR] WAV copy failed for {filepath}: {e}")
+
             if self.params['delete_unsorted']:
                 if verdict in ("Clean Bat", "Noisy Bat"):
                     if copied_ok: to_delete.append(filepath)
                 else:
                     to_delete.append(filepath)
 
-    else:
-        # --- This is the multiprocessing logic for multi-core ---
-        ctx = get_context("spawn")
-        pool = ctx.Pool(processes=cores, maxtasksperchild=50)
+        if self.is_running and to_delete:
+            self.request_confirmation.emit(f"Delete {len(to_delete)} original sorted files?", to_delete)
 
-        for i, filepath in enumerate(self.wav_files):
-            if not self.is_running: break
-            self.progress.emit(i, len(self.wav_files), Path(filepath).name)
+        self.finished.emit(results, time.time() - start_time)
 
-            tasks, verdict_info = analyze_single_file(filepath, self.params)
-
-            calls = []
-            if tasks:
-                for res in pool.imap_unordered(process_chunk, tasks):
-                    calls.extend(res)
-
-            # (The rest of the verdict and file saving logic is the same)
-            counts = {"Echolocation": 0, "Social": 0, "ShortSocial": 0, "Noise": 0}
-            for c in calls: counts[c.get('label', 'Noise')] += 1
-            verdict = "No Bat"
-            echo_times = sorted([c['start_time'] for c in calls if c.get('label') == "Echolocation"])
-            if len(echo_times) >= self.params['echo_burst_n']:
-                for j in range(len(echo_times) - self.params['echo_burst_n'] + 1):
-                    if echo_times[j + self.params['echo_burst_n'] - 1] - echo_times[j] < self.params['echo_window_s']:
-                        verdict = "Bat";
-                        break
-            if verdict == "No Bat" and counts["Social"] >= self.params['min_social_calls']: verdict = "Bat"
-
-            snr_ratio = None
-            if verdict == "Bat":
-                call_dbs = [c['mean_db_active'] for c in calls if c['label'] != 'Noise' and 'mean_db_active' in c]
-                mean_db = np.mean(call_dbs) if call_dbs else -100.0
-                noise_ref_db = verdict_info.get("noise_ref_db")
-                if noise_ref_db is not None:
-                    snr_ratio = 10 ** ((mean_db - noise_ref_db) / 10.0) if noise_ref_db > -100 else 0
-                    verdict = "Clean Bat" if snr_ratio > self.params['snr_clean_threshold'] else "Noisy Bat"
-
-            verdict_info.update({"verdict": verdict, "counts": counts, "snr_ratio": snr_ratio})
-            results.append(verdict_info)
-
-            # File saving logic
-            if self.params['save_pngs']:
-                try:
-                    save_file_png_wrapper(filepath, verdict, self.out_root, cfg)
-                except Exception as e:
-                    print(f"[ERROR] PNG generation failed for {filepath}: {e}")
-            copied_ok = False
-            if self.params['save_wavs'] and verdict in ("Clean Bat", "Noisy Bat"):
-                try:
-                    sub = "CleanBat" if verdict == "Clean Bat" else "NoisyBat"
-                    rel_parent = Path(filepath).parent.relative_to(self.params['base_folder']) if self.params[
-                        "recurse"] else Path()
-                    dst = self.out_root / sub / rel_parent / Path(filepath).name
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    if not dst.exists(): shutil.copy2(filepath, dst)
-                    copied_ok = True
-                except Exception as e:
-                    print(f"[ERROR] WAV copy failed for {filepath}: {e}")
-            if self.params['delete_unsorted']:
-                if verdict in ("Clean Bat", "Noisy Bat"):
-                    if copied_ok: to_delete.append(filepath)
-                else:
-                    to_delete.append(filepath)
-
-        pool.close()
-        pool.join()
-
-    # The final part of the function is the same for both cases
-    if self.is_running and to_delete:
-        self.request_confirmation.emit(f"Delete {len(to_delete)} original sorted files?", to_delete)
-
-    self.finished.emit(results, time.time() - start_time)
+    def stop(self):
+        self.is_running = False
 
 
 class MainWindow(QMainWindow):
@@ -578,7 +522,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Bat / No-Bat Classifier")
-        self.setGeometry(100, 100, 1100, 750)  # Increased size for better layout
+        self.setGeometry(100, 100, 1100, 750)
         self.thread = None
         self.worker = None
 
@@ -644,13 +588,6 @@ class MainWindow(QMainWindow):
         self.main_layout.addWidget(right_panel, 1)
 
     def create_parameter_groups(self, parent_layout):
-        # --- Helper to create a labeled entry field ---
-        def add_row(layout, label, val, width=60):
-            entry = QLineEdit(str(val));
-            entry.setFixedWidth(width)
-            layout.addRow(label, entry)
-            return entry
-
         # --- Performance Group ---
         perf_group = QGroupBox("Performance & Stability")
         perf_layout = QGridLayout(perf_group)
@@ -744,8 +681,8 @@ class MainWindow(QMainWindow):
         path_obj = Path(folder)
         glob_pattern = "**/*" if params['recurse'] else "*"
         all_files = path_obj.glob(glob_pattern)
-        wav_files = [f for f in all_files if f.suffix.lower() == ".wav"]
-        self.total_bytes = sum(f.stat().st_size for f in wav_files)
+        wav_files = [str(f) for f in all_files if f.suffix.lower() == ".wav"]  # Worker expects strings
+        self.total_bytes = sum(Path(f).stat().st_size for f in wav_files)
         if not wav_files:
             QMessageBox.information(self, "No Files", "No .wav files found in the selected directory.");
             return
@@ -756,7 +693,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(True)
 
-        out_root = path_obj / "_bat_no_bat_outputs_pyqt"
+        out_root = path_obj / "_bat_no_bat_outputs_pyside"
         for sub in ("CleanBat", "NoisyBat", "NoBat"): (out_root / sub).mkdir(parents=True, exist_ok=True)
 
         self.thread = QThread();
@@ -773,23 +710,28 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Processing {current}/{total}: {filename}")
 
     def on_analysis_finished(self, results, duration):
-        out_root = Path(self.folder_path_edit.text()) / "_bat_no_bat_outputs_pyqt"
+        out_root = Path(self.folder_path_edit.text()) / "_bat_no_bat_outputs_pyside"
 
-        # This is the line you were looking for, using self.total_bytes
         report_path = write_report_txt(results, out_root, duration, self.total_bytes)
 
-        self.status_label.setText(f"Analysis complete! Report saved to: {report_path}")
+        self.status_label.setText(f"Analysis complete! Report saved.")
         self.run_button.setEnabled(True);
         self.run_button.setText("Run Analysis")
         self.progress_bar.setRange(0, 100);
-        self.progress_bar.setValue(100)  # Show 100%
+        self.progress_bar.setValue(100)
+
         params = self.collect_params()
+        # Only show the final pop-up if the deletion confirmation was not triggered
         if not (params and params['delete_unsorted'] and any(res['verdict'] != 'No Bat' for res in results)):
             QMessageBox.information(self, "Success", f"Batch analysis is complete.\nReport saved to:\n{report_path}")
-        self.thread.quit();
-        self.thread.wait();
-        self.thread.deleteLater();
-        self.worker.deleteLater()
+
+        if self.thread:
+            self.thread.quit();
+            self.thread.wait();
+            self.thread.deleteLater();
+            self.worker.deleteLater()
+            self.thread = None
+            self.worker = None
 
     def confirm_deletion(self, message, files_to_delete):
         reply = QMessageBox.question(self, 'Confirm Deletion', message,
@@ -799,12 +741,14 @@ class MainWindow(QMainWindow):
             deleted, failed = 0, 0
             for f in files_to_delete:
                 try:
-                    os.remove(f); deleted += 1
+                    os.remove(f);
+                    deleted += 1
                 except OSError as e:
-                    failed += 1; print(f"[ERROR] Failed to delete {f}: {e}")
+                    failed += 1;
+                    print(f"[ERROR] Failed to delete {f}: {e}")
             self.status_label.setText(f"Deletion complete. Deleted: {deleted}, Failed: {failed}.")
-        # Show final message here after deletion logic is handled.
-        report_path = Path(self.folder_path_edit.text()) / "_bat_no_bat_outputs_pyqt" / "batch_report.txt"
+
+        report_path = Path(self.folder_path_edit.text()) / "_bat_no_bat_outputs_pyside" / "batch_report.txt"
         QMessageBox.information(self, "Success", f"Batch analysis is complete.\nReport saved to:\n{report_path}")
 
     def apply_stylesheet(self):
@@ -849,17 +793,9 @@ class MainWindow(QMainWindow):
 # =============================================================================
 # 4. APPLICATION ENTRY POINT
 # =============================================================================
-def main():
-    """Main function to run the PyQt6 application."""
+if __name__ == "__main__":
+    multiprocessing.freeze_support()  # Necessary for Windows/macOS executables
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    # This MUST be the first line in the main block for PyInstaller and Windows
-    multiprocessing.freeze_support()
-
-    # Run the application
-    main()
